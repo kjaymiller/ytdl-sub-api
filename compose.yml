@@ -1,0 +1,55 @@
+services:
+  # ytdl-sub is a one-shot CLI with no daemon/HTTP mode. The container
+  # is kept alive so the cron sidecar and API can `docker exec` into it.
+  ytdl-sub:
+    image: ghcr.io/jmbannon/ytdl-sub:latest
+    container_name: ytdl-sub
+    restart: unless-stopped
+    entrypoint: ["sleep", "infinity"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./data/config:/config
+      - ${SUBSCRIPTIONS_FILE:-./subscriptions.yaml}:/config/subscriptions.yaml
+      - ${DOWNLOADS_DIR:-./data/downloads}:/downloads
+
+  # Cron sidecar. Schedule is declared as labels on this service; it
+  # invokes ytdl-sub via `docker exec`.
+  ytdl-sub-cron:
+    image: mcuadros/ofelia:0.3.22
+    container_name: ytdl-sub-cron
+    restart: unless-stopped
+    depends_on:
+      - ytdl-sub
+    command: daemon --docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "ofelia.job-exec.ytdl-sub-run.schedule=${CRON_SCHEDULE:-0 7 * * * *}"
+      - "ofelia.job-exec.ytdl-sub-run.container=ytdl-sub"
+      - "ofelia.job-exec.ytdl-sub-run.command=ytdl-sub sub /config/subscriptions.yaml"
+
+  # HTTP API: CRUD over subscriptions.yaml + on-demand run trigger.
+  # Bearer-token auth (API_TOKEN in .env).
+  ytdl-sub-api:
+    image: python:3.14-slim
+    container_name: ytdl-sub-api
+    restart: unless-stopped
+    depends_on:
+      - ytdl-sub
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-UTC}
+      - SUBS_PATH=/subs/subscriptions.yaml
+      - YTDL_SUB_CONTAINER=ytdl-sub
+      - FLASK_RUN_HOST=0.0.0.0
+      - FLASK_RUN_PORT=5000
+    ports:
+      - "${API_PORT:-5000}:5000"
+    volumes:
+      - ./api.py:/app/api.py:ro
+      - ${SUBSCRIPTIONS_FILE:-./subscriptions.yaml}:/subs/subscriptions.yaml
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["sh", "-c", "pip install --quiet 'flask==3.*' 'flask-cors==5.*' 'ruamel.yaml==0.18.*' 'docker==7.*' && exec python /app/api.py"]

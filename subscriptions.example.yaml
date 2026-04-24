@@ -1,0 +1,26 @@
+# ytdl-sub subscriptions file. This is the source of truth for what
+# gets downloaded. The API will mutate this file on POST/DELETE; keep
+# it checked into your own deployment repo (or a volume) so changes
+# survive container restarts.
+#
+# Preset `Jellyfin TV Show` lays files out as:
+#   /downloads/{channel}/Season {year}/s{year}e{episode} - {title}.{ext}
+# with NFO sidecars — works well with Jellyfin, Plex, ErsatzTV.
+#
+# Per-subscription retention knobs:
+#   only_recent_date_range: "14days"
+#   only_recent_max_files: 10
+# Files aged out are removed on the next run.
+
+__preset__:
+  overrides:
+    tv_show_directory: "/downloads"
+  output_options:
+    keep_files_after: "30days"
+
+Jellyfin TV Show:
+  # "Example Channel":
+  #   url: "https://www.youtube.com/@exampleChannel"
+  #   overrides:
+  #     only_recent_date_range: "14days"
+  #     only_recent_max_files: 10
