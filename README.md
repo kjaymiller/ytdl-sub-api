@@ -37,14 +37,28 @@ Files are downloaded to `./data/downloads` by default. Override with
 
 All endpoints except `/healthz` require `Authorization: Bearer $API_TOKEN`.
 
-| Method | Path                  | Purpose                           |
-|--------|-----------------------|-----------------------------------|
-| GET    | `/healthz`            | Liveness, no auth.                |
-| GET    | `/channels`           | List all subscriptions.           |
-| GET    | `/channels?url=<u>`   | Check if a URL is subscribed.     |
-| POST   | `/channels`           | Add a subscription.               |
-| DELETE | `/channels/<name>`    | Remove a subscription by name.    |
-| POST   | `/run`                | Trigger `ytdl-sub sub` now.       |
+| Method | Path                  | Purpose                                            |
+|--------|-----------------------|----------------------------------------------------|
+| GET    | `/healthz`            | Liveness, no auth.                                 |
+| GET    | `/channels`           | List subscriptions, enriched with on-disk stats.   |
+| GET    | `/channels?url=<u>`   | Check if a URL is subscribed.                      |
+| POST   | `/channels`           | Add a subscription.                                |
+| DELETE | `/channels/<name>`    | Remove a subscription by name.                     |
+| POST   | `/run`                | Trigger `ytdl-sub sub` now.                        |
+| GET    | `/runs?limit=N`       | Recent ofelia run history (default 20, max 100).   |
+| GET    | `/downloads`          | Per-folder snapshot of `/downloads`.               |
+
+Each `/channels` entry now includes a `downloads` field with
+`{file_count, latest_mtime, latest_file}` if the channel's on-disk
+folder can be matched (exact name, falling back to a slugified
+compare). It's `null` when no folder matches — usually because
+ytdl-sub renamed the folder from yt-dlp metadata; `GET /downloads`
+shows everything that's actually on disk.
+
+`/runs` reads ofelia's `save-folder` (set in `compose.yml`) — one
+JSON record per scheduled execution with exit code, timing, and
+stdout/stderr. Useful for "did the last cron tick succeed?" without
+shelling into the cron container.
 
 ### POST /channels
 
