@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data/config:/config
       - ${SUBSCRIPTIONS_FILE:-./subscriptions.yaml}:/config/subscriptions.yaml
+      - ${CONFIG_FILE:-./config.yaml}:/config/config.yaml
       - ${DOWNLOADS_DIR:-./data/downloads}:/downloads
 
   # Cron sidecar. Schedule is declared as labels on this service; it
@@ -31,7 +32,7 @@ services:
     labels:
       - "ofelia.job-exec.ytdl-sub-run.schedule=${CRON_SCHEDULE:-0 7 * * * *}"
       - "ofelia.job-exec.ytdl-sub-run.container=ytdl-sub"
-      - "ofelia.job-exec.ytdl-sub-run.command=ytdl-sub sub /config/subscriptions.yaml"
+      - "ofelia.job-exec.ytdl-sub-run.command=ytdl-sub --config /config/config.yaml sub /config/subscriptions.yaml"
       - "ofelia.job-exec.ytdl-sub-run.save-folder=/var/log/ofelia"
 
   # HTTP API: CRUD over subscriptions.yaml + on-demand run trigger.

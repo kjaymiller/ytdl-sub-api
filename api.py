@@ -39,6 +39,7 @@ from flask_cors import CORS
 from ruamel.yaml import YAML
 
 SUBS_PATH = os.environ.get("SUBS_PATH", "/subs/subscriptions.yaml")
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 CONTAINER = os.environ.get("YTDL_SUB_CONTAINER", "ytdl-sub")
 API_TOKEN = os.environ.get("API_TOKEN", "")
 DEFAULT_PRESET = os.environ.get("DEFAULT_PRESET", "Jellyfin TV Show")
@@ -294,7 +295,8 @@ def run_now():
         client = docker.from_env()
         container = client.containers.get(CONTAINER)
         exit_code, output = container.exec_run(
-            ["ytdl-sub", "sub", "/config/subscriptions.yaml"], demux=False
+            ["ytdl-sub", "--config", CONFIG_PATH, "sub", "/config/subscriptions.yaml"],
+            demux=False,
         )
     except docker.errors.NotFound:
         return jsonify({"error": f"container {CONTAINER} not running"}), 503
