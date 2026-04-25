@@ -91,6 +91,7 @@ Everything tunable lives in `.env`. See `.env.example` for the full list.
 | `CRON_SCHEDULE`      | Ofelia 6-field cron (default `0 7 * * * *` — :07 hourly).       |
 | `DOWNLOADS_DIR`      | Host dir bind-mounted to `/downloads`.                          |
 | `SUBSCRIPTIONS_FILE` | Host path to `subscriptions.yaml`.                              |
+| `CONFIG_FILE`        | Host path to `config.yaml` (custom presets, working dir).       |
 | `PUID` / `PGID`      | UID/GID for ytdl-sub container.                                 |
 | `TZ`                 | Timezone for cron + logs.                                       |
 | `DEFAULT_PRESET`     | Preset used when POST omits one.                                |
