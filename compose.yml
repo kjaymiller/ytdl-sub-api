@@ -15,7 +15,9 @@ services:
       - ${DOWNLOADS_DIR:-./data/downloads}:/downloads
 
   # Cron sidecar. Schedule is declared as labels on this service; it
-  # invokes ytdl-sub via `docker exec`.
+  # invokes ytdl-sub via `docker exec` and persists each run's
+  # stdout/stderr/status to OFELIA_LOGS_DIR (mounted read-only into
+  # the API container so GET /runs can serve them).
   ytdl-sub-cron:
     image: mcuadros/ofelia:0.3.22
     container_name: ytdl-sub-cron
@@ -25,10 +27,12 @@ services:
     command: daemon --docker
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${OFELIA_LOGS_DIR:-./data/ofelia-logs}:/var/log/ofelia
     labels:
       - "ofelia.job-exec.ytdl-sub-run.schedule=${CRON_SCHEDULE:-0 7 * * * *}"
       - "ofelia.job-exec.ytdl-sub-run.container=ytdl-sub"
       - "ofelia.job-exec.ytdl-sub-run.command=ytdl-sub sub /config/subscriptions.yaml"
+      - "ofelia.job-exec.ytdl-sub-run.save-folder=/var/log/ofelia"
 
   # HTTP API: CRUD over subscriptions.yaml + on-demand run trigger.
   # Bearer-token auth (API_TOKEN in .env).
@@ -52,4 +56,7 @@ services:
       - ./api.py:/app/api.py:ro
       - ${SUBSCRIPTIONS_FILE:-./subscriptions.yaml}:/subs/subscriptions.yaml
       - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only views the API uses to enrich /channels and serve /runs.
+      - ${DOWNLOADS_DIR:-./data/downloads}:/downloads:ro
+      - ${OFELIA_LOGS_DIR:-./data/ofelia-logs}:/var/log/ofelia:ro
     command: ["sh", "-c", "pip install --quiet 'flask==3.*' 'flask-cors==5.*' 'ruamel.yaml==0.18.*' 'docker==7.*' && exec python /app/api.py"]
