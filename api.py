@@ -49,6 +49,12 @@ DEFAULT_PRESET = os.environ.get("DEFAULT_PRESET", "Jellyfin TV Show")
 # chained preset (e.g. "Jellyfin TV Show by Date | long_collection").
 # Defaults to DEFAULT_PRESET so single-preset deployments need no change.
 BASE_PRESET = os.environ.get("BASE_PRESET", DEFAULT_PRESET)
+# Profile name appended to BASE_PRESET when POST sends `keep_days` /
+# `max_files` without an explicit `profile` or `preset`. ytdl-sub ships
+# an `Only Recent` preset whose `only_recent_*` overrides drive the
+# date-range / max-files filtering, so per-channel manual overrides
+# need that preset somewhere in the chain to take effect.
+MANUAL_PROFILE = os.environ.get("MANUAL_PROFILE", "Only Recent")
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_VIEW", "/downloads"))
 OFELIA_LOGS_DIR = Path(os.environ.get("OFELIA_LOGS_VIEW", "/var/log/ofelia"))
 MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".opus", ".ogg", ".flac"}
@@ -267,6 +273,7 @@ def list_presets():
         {
             "base_preset": BASE_PRESET,
             "default_preset": DEFAULT_PRESET,
+            "manual_profile": MANUAL_PROFILE,
             "profiles": _load_profiles(),
         }
     )
@@ -303,10 +310,27 @@ def add_channel():
     raw_preset = (payload.get("preset") or "").strip()
     if profile and raw_preset:
         return jsonify({"error": "pass either profile or preset, not both"}), 400
+
+    overrides = {}
+    if payload.get("keep_days") is not None:
+        overrides["only_recent_date_range"] = f"{int(payload['keep_days'])}days"
+    if payload.get("max_files") is not None:
+        overrides["only_recent_max_files"] = int(payload["max_files"])
+
     if profile:
+        # `profile` + per-channel overrides is legal: ytdl-sub merges the
+        # sub-block's overrides over the chained profile's defaults.
         preset = f"{BASE_PRESET} | {profile}"
+    elif raw_preset:
+        preset = raw_preset
+    elif overrides:
+        # Manual overrides need `Only Recent` (or whatever MANUAL_PROFILE
+        # points at) somewhere in the chain to actually filter — chain it
+        # onto BASE_PRESET so the per-sub overrides take effect.
+        preset = f"{BASE_PRESET} | {MANUAL_PROFILE}"
     else:
-        preset = raw_preset or DEFAULT_PRESET
+        preset = DEFAULT_PRESET
+
     name = payload.get("name") or _normalize(url).rsplit("/", 1)[-1] or url
 
     data = _load()
@@ -316,12 +340,6 @@ def add_channel():
 
     if preset not in data or not isinstance(data[preset], dict):
         data[preset] = {}
-
-    overrides = {}
-    if payload.get("keep_days") is not None:
-        overrides["only_recent_date_range"] = f"{int(payload['keep_days'])}days"
-    if payload.get("max_files") is not None:
-        overrides["only_recent_max_files"] = int(payload["max_files"])
 
     block = {"url": url}
     if overrides:

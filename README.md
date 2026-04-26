@@ -81,6 +81,17 @@ resolves as a chained preset. Define the profiles under `presets:` in
 your `config.yaml`. Use `preset` only when you need a literal key that
 doesn't fit the `<base> | <profile>` shape.
 
+`profile` and `keep_days`/`max_files` can be combined — ytdl-sub merges
+the per-subscription `overrides` block over the chained profile's
+defaults, so this is the right way to say "use `long_collection` but
+keep 50 episodes for this one channel".
+
+If you send `keep_days`/`max_files` with no `profile` (and no `preset`),
+the subscription lands under `f"{BASE_PRESET} | {MANUAL_PROFILE}"`
+(default `MANUAL_PROFILE=Only Recent`). The chain is required: ytdl-sub's
+`only_recent_*` filtering only kicks in when something in the chain
+pulls in the `Only Recent` preset.
+
 ### URL matching
 
 `/channels?url=` normalizes URLs lightly (lowercase host, strip `www.`, strip
@@ -105,6 +116,7 @@ Everything tunable lives in `.env`. See `.env.example` for the full list.
 | `TZ`                 | Timezone for cron + logs.                                       |
 | `DEFAULT_PRESET`     | Preset used when POST omits both `profile` and `preset`.        |
 | `BASE_PRESET`        | Base for chained presets; combined with `profile` on POST.      |
+| `MANUAL_PROFILE`     | Profile chained onto `BASE_PRESET` for ad-hoc `keep_days`/`max_files` (default `Only Recent`). |
 
 ## Reverse proxy
 
