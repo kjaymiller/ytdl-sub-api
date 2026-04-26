@@ -48,6 +48,11 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - SUBS_PATH=/subs/subscriptions.yaml
+      # Optional: bind-mount your ytdl-sub config.yaml at this path
+      # (e.g. via a compose override) and GET /presets will enrich
+      # the dropdown with the profiles defined under `presets:`. The
+      # API gracefully degrades to "in-use only" if the file is absent.
+      - CONFIG_PATH=/config/config.yaml
       - YTDL_SUB_CONTAINER=ytdl-sub
       - FLASK_RUN_HOST=0.0.0.0
       - FLASK_RUN_PORT=5000

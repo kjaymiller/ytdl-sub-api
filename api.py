@@ -17,6 +17,7 @@ Endpoints (all require `Authorization: Bearer <API_TOKEN>` except
   POST /run                               -> docker exec ytdl-sub to pull now
   GET  /runs?limit=N                      -> recent ofelia run history (default 20)
   GET  /downloads                         -> per-folder snapshot under /downloads
+  GET  /presets                           -> selectable preset strings for POST /channels
 
 URL matching is done after a light normalization (lowercased host,
 www stripped, path suffixes like /videos stripped, query/fragment
@@ -250,6 +251,54 @@ def _read_runs(limit: int) -> list[dict]:
     return runs
 
 
+def _plain(v):
+    """Coerce ruamel YAML containers/scalars into JSON-safe primitives."""
+    if isinstance(v, dict):
+        return {str(k): _plain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_plain(x) for x in v]
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    return str(v)
+
+
+def _load_profiles() -> dict[str, dict]:
+    """Profiles defined under `presets:` in ytdl-sub's config.yaml.
+
+    Each entry returns its parent preset chain (the `preset:` field —
+    string or list) and `overrides:` map. Both are coerced to JSON-safe
+    primitives so the response can be encoded directly. Returns {} if
+    the file isn't mounted or is unreadable, so the endpoint degrades
+    to "in-use only" without erroring.
+    """
+    p = Path(CONFIG_PATH)
+    if not p.is_file():
+        return {}
+    try:
+        with open(p) as f:
+            cfg = yaml.load(f) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    presets = cfg.get("presets")
+    if not isinstance(presets, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for name, body in presets.items():
+        if not isinstance(name, str) or not isinstance(body, dict):
+            continue
+        parents = body.get("preset")
+        if isinstance(parents, str):
+            parents = [parents]
+        elif not isinstance(parents, list):
+            parents = []
+        overrides = body.get("overrides")
+        out[name] = {
+            "parents": [str(x) for x in parents],
+            "overrides": _plain(overrides) if isinstance(overrides, dict) else {},
+        }
+    return out
+
+
 def _auth_required(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
@@ -401,10 +450,45 @@ def list_downloads():
     return jsonify({"root": str(DOWNLOADS_DIR), "folders": folders})
 
 
+@app.get("/presets")
+@_auth_required
+def list_presets():
+    """Selectable preset strings for the dropdown on POST /channels.
+
+    Combines:
+      - DEFAULT_PRESET on its own (the unchained base).
+      - DEFAULT_PRESET chained with each profile from config.yaml
+        (e.g. "Jellyfin TV Show by Date | long_collection"), in the
+        order they appear in config.yaml.
+      - Any preset key already in subscriptions.yaml not covered above
+        (e.g. ad-hoc keys, or keys for a different base preset).
+    """
+    data = _load()
+    in_use = sorted({preset for preset, _, _ in _iter_subs(data)})
+    profile_details = _load_profiles()
+    profiles = list(profile_details.keys())
+    base = DEFAULT_PRESET
+    combined = [base] + [f"{base} | {p}" for p in profiles]
+    seen: set[str] = set()
+    presets: list[str] = []
+    for p in combined + in_use:
+        if p not in seen:
+            seen.add(p)
+            presets.append(p)
+    return jsonify({
+        "presets": presets,
+        "base_preset": base,
+        "profiles": profiles,
+        "profile_details": profile_details,
+        "in_use": in_use,
+    })
+
+
 if __name__ == "__main__":
     print(
-        f"ytdl-sub-api: subs={SUBS_PATH} container={CONTAINER} "
-        f"downloads={DOWNLOADS_DIR} ofelia_logs={OFELIA_LOGS_DIR}",
+        f"ytdl-sub-api: subs={SUBS_PATH} config={CONFIG_PATH} "
+        f"container={CONTAINER} downloads={DOWNLOADS_DIR} "
+        f"ofelia_logs={OFELIA_LOGS_DIR}",
         file=sys.stderr,
     )
     app.run(host="0.0.0.0", port=int(os.environ.get("FLASK_RUN_PORT", 5000)))
