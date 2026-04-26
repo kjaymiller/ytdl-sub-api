@@ -8,10 +8,11 @@ file stays readable after API writes.
 Endpoints (all require `Authorization: Bearer <API_TOKEN>` except
 /healthz):
   GET  /healthz
+  GET  /presets                           -> base preset + user-defined profiles
   GET  /channels                          -> list all, enriched with on-disk stats
   GET  /channels?url=<youtube_url>        -> 200 with details, or 404
   POST /channels                          -> add
-       body: {url, name?, keep_days?, max_files?, preset?}
+       body: {url, name?, profile?, preset?, keep_days?, max_files?}
   DELETE /channels/<name>                 -> remove
   POST /run                               -> docker exec ytdl-sub to pull now
   GET  /runs?limit=N                      -> recent ofelia run history (default 20)
@@ -43,6 +44,11 @@ CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 CONTAINER = os.environ.get("YTDL_SUB_CONTAINER", "ytdl-sub")
 API_TOKEN = os.environ.get("API_TOKEN", "")
 DEFAULT_PRESET = os.environ.get("DEFAULT_PRESET", "Jellyfin TV Show")
+# Base preset used when POST /channels passes `profile`. The stored key
+# becomes f"{BASE_PRESET} | {profile}", which ytdl-sub resolves as a
+# chained preset (e.g. "Jellyfin TV Show by Date | long_collection").
+# Defaults to DEFAULT_PRESET so single-preset deployments need no change.
+BASE_PRESET = os.environ.get("BASE_PRESET", DEFAULT_PRESET)
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_VIEW", "/downloads"))
 OFELIA_LOGS_DIR = Path(os.environ.get("OFELIA_LOGS_VIEW", "/var/log/ofelia"))
 MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".opus", ".ogg", ".flac"}
@@ -62,6 +68,24 @@ CORS(app)
 def _load() -> dict:
     with open(SUBS_PATH) as f:
         return yaml.load(f) or {}
+
+
+def _load_profiles() -> list[str]:
+    """User-defined preset names from CONFIG_PATH's `presets:` block.
+
+    These are the profile names callers can pass as `profile` on POST.
+    Returns [] if the config file is missing, malformed, or has no
+    `presets:` key — the API is still useful with raw `preset:` strings.
+    """
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = yaml.load(f) or {}
+    except OSError:
+        return []
+    presets = cfg.get("presets")
+    if not isinstance(presets, dict):
+        return []
+    return [k for k in presets if isinstance(k, str) and not k.startswith("__")]
 
 
 def _save(data: dict) -> None:
@@ -236,6 +260,18 @@ def healthz():
     return jsonify({"ok": True})
 
 
+@app.get("/presets")
+@_auth_required
+def list_presets():
+    return jsonify(
+        {
+            "base_preset": BASE_PRESET,
+            "default_preset": DEFAULT_PRESET,
+            "profiles": _load_profiles(),
+        }
+    )
+
+
 @app.get("/channels")
 @_auth_required
 def list_or_find_channels():
@@ -263,7 +299,14 @@ def add_channel():
     url = (payload.get("url") or "").strip()
     if not url:
         return jsonify({"error": "url required"}), 400
-    preset = payload.get("preset") or DEFAULT_PRESET
+    profile = (payload.get("profile") or "").strip()
+    raw_preset = (payload.get("preset") or "").strip()
+    if profile and raw_preset:
+        return jsonify({"error": "pass either profile or preset, not both"}), 400
+    if profile:
+        preset = f"{BASE_PRESET} | {profile}"
+    else:
+        preset = raw_preset or DEFAULT_PRESET
     name = payload.get("name") or _normalize(url).rsplit("/", 1)[-1] or url
 
     data = _load()

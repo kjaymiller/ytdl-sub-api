@@ -40,6 +40,7 @@ All endpoints except `/healthz` require `Authorization: Bearer $API_TOKEN`.
 | Method | Path                  | Purpose                                            |
 |--------|-----------------------|----------------------------------------------------|
 | GET    | `/healthz`            | Liveness, no auth.                                 |
+| GET    | `/presets`            | Base preset + user-defined profiles from config.   |
 | GET    | `/channels`           | List subscriptions, enriched with on-disk stats.   |
 | GET    | `/channels?url=<u>`   | Check if a URL is subscribed.                      |
 | POST   | `/channels`           | Add a subscription.                                |
@@ -66,11 +67,19 @@ shelling into the cron container.
 {
   "url": "https://www.youtube.com/@exampleChannel",
   "name": "Example Channel",        // optional; derived from URL
-  "preset": "Jellyfin TV Show",     // optional; DEFAULT_PRESET
+  "profile": "long_collection",     // optional; combines with BASE_PRESET
+  "preset": "Jellyfin TV Show",     // optional escape hatch; mutually exclusive with profile
   "keep_days": 14,                  // optional; only_recent_date_range
   "max_files": 10                   // optional; only_recent_max_files
 }
 ```
+
+`profile` is the recommended way to pick a retention shape: pass a name
+from `GET /presets` (e.g. `"long_collection"`) and the API stores the
+subscription under `f"{BASE_PRESET} | {profile}"`, which ytdl-sub
+resolves as a chained preset. Define the profiles under `presets:` in
+your `config.yaml`. Use `preset` only when you need a literal key that
+doesn't fit the `<base> | <profile>` shape.
 
 ### URL matching
 
@@ -94,7 +103,8 @@ Everything tunable lives in `.env`. See `.env.example` for the full list.
 | `CONFIG_FILE`        | Host path to `config.yaml` (custom presets, working dir).       |
 | `PUID` / `PGID`      | UID/GID for ytdl-sub container.                                 |
 | `TZ`                 | Timezone for cron + logs.                                       |
-| `DEFAULT_PRESET`     | Preset used when POST omits one.                                |
+| `DEFAULT_PRESET`     | Preset used when POST omits both `profile` and `preset`.        |
+| `BASE_PRESET`        | Base for chained presets; combined with `profile` on POST.      |
 
 ## Reverse proxy
 
