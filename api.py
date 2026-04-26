@@ -94,6 +94,47 @@ def _load_profiles() -> list[str]:
     return [k for k in presets if isinstance(k, str) and not k.startswith("__")]
 
 
+def _plain(v):
+    """Coerce ruamel YAML containers/scalars into JSON-safe primitives."""
+    if isinstance(v, dict):
+        return {str(k): _plain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_plain(x) for x in v]
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    return str(v)
+
+
+def _load_profile_details() -> dict[str, dict]:
+    """Per-profile parent chain + overrides, for clients that want to
+    show what a profile does (date range, max files, etc.) instead of
+    just rendering an opaque name. Same failure modes as _load_profiles().
+    """
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = yaml.load(f) or {}
+    except OSError:
+        return {}
+    presets = cfg.get("presets")
+    if not isinstance(presets, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for name, body in presets.items():
+        if not isinstance(name, str) or name.startswith("__") or not isinstance(body, dict):
+            continue
+        parents = body.get("preset")
+        if isinstance(parents, str):
+            parents = [parents]
+        elif not isinstance(parents, list):
+            parents = []
+        overrides = body.get("overrides")
+        out[name] = {
+            "parents": [str(x) for x in parents],
+            "overrides": _plain(overrides) if isinstance(overrides, dict) else {},
+        }
+    return out
+
+
 def _save(data: dict) -> None:
     buf = io.StringIO()
     yaml.dump(data, buf)
@@ -275,6 +316,7 @@ def list_presets():
             "default_preset": DEFAULT_PRESET,
             "manual_profile": MANUAL_PROFILE,
             "profiles": _load_profiles(),
+            "profile_details": _load_profile_details(),
         }
     )
 
