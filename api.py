@@ -89,12 +89,24 @@ def _normalize(url: str) -> str:
 
 
 def _iter_subs(data: dict):
+    """Walk every subscription in `data`, yielding (preset, name, sub_dict).
+
+    ytdl-sub accepts three subscription value shapes:
+      "Channel": "https://..."                  # bare URL
+      "Channel": ["https://...", "https://..."]  # multi-URL
+      "Channel": {url: "...", overrides: ...}    # full preset block
+    Normalize all three to a dict so callers don't have to branch.
+    """
     for preset, block in data.items():
         if preset.startswith("__") or not isinstance(block, dict):
             continue
         for name, sub in block.items():
             if isinstance(sub, dict):
                 yield preset, name, sub
+            elif isinstance(sub, str):
+                yield preset, name, {"url": sub}
+            elif isinstance(sub, list) and sub:
+                yield preset, name, {"url": sub[0], "additional_urls": sub[1:]}
 
 
 def _find_by_url(data: dict, url: str):
