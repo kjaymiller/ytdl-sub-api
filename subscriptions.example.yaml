@@ -19,8 +19,15 @@ __preset__:
     keep_files_after: "30days"
 
 Jellyfin TV Show:
+  # Simple form — just a URL. Use this when no per-channel retention
+  # tweaks are needed (defaults come from the preset chain).
+  # "Example Channel": "https://www.youtube.com/@exampleChannel"
+
+  # Full form — `url` MUST live inside `overrides:`. ytdl-sub rejects
+  # a top-level `url:` field at this level with "Allowed fields:
+  # ... overrides, preset, ...".
   # "Example Channel":
-  #   url: "https://www.youtube.com/@exampleChannel"
   #   overrides:
+  #     url: "https://www.youtube.com/@exampleChannel"
   #     only_recent_date_range: "14days"
   #     only_recent_max_files: 10
