@@ -73,7 +73,115 @@ CORS(app)
 
 def _load() -> dict:
     with open(SUBS_PATH) as f:
-        return yaml.load(f) or {}
+        data = yaml.load(f) or {}
+    # Migrate legacy entries written by older versions of this API
+    # (top-level `url:` inside a sub block — ytdl-sub rejects that
+    # field with "Allowed fields: ... overrides, preset, ..." and
+    # blocks the cron run on validation). Idempotent; touches only
+    # blocks that need it; preserves any other keys.
+    _migrate_subs(data)
+    return data
+
+
+def _sub_url(sub) -> str:
+    """Extract the URL from a sub block in any of the shapes ytdl-sub
+    accepts (or that older versions of this API wrote).
+
+    Order of precedence:
+      "Channel": "https://..."                       # scalar
+      "Channel": ["https://...", ...]                # list
+      "Channel": {overrides: {url: "..."}}           # correct dict shape
+      "Channel": {url: "..."}                        # legacy/broken dict shape
+
+    The legacy shape is what `add_channel` produced before this fix —
+    `_load` migrates it on read, but `_sub_url` still tolerates it so
+    callers don't crash on a partly-migrated file.
+    """
+    if isinstance(sub, str):
+        return sub
+    if isinstance(sub, list) and sub:
+        return sub[0]
+    if isinstance(sub, dict):
+        ov = sub.get("overrides") or {}
+        if isinstance(ov, dict) and ov.get("url"):
+            return ov["url"]
+        if sub.get("url"):
+            return sub["url"]
+    return ""
+
+
+# ytdl-sub's preset-level schema. If a dict has any of these as direct
+# children, it's a subscription block — NOT a preset-name block whose
+# children are subscriptions. Source: validation error message
+# "Allowed fields: ..." emitted when an unknown field appears.
+_PRESET_FIELDS = frozenset({
+    "_view", "audio_extract", "chapters", "date_range", "download",
+    "embed_thumbnail", "file_convert", "filter_exclude", "filter_include",
+    "format", "match_filters", "music_tags", "nfo_tags",
+    "output_directory_nfo_tags", "output_options", "overrides", "preset",
+    "split_by_chapters", "square_thumbnail", "static_nfo_tags", "subtitles",
+    "throttle_protection", "video_tags", "ytdl_options",
+})
+
+
+def _looks_like_sub_block(value) -> bool:
+    """True if `value` is a single subscription block (dict with any
+    preset-level field as a direct key), not a container of subs.
+
+    Lets us distinguish:
+      "Some Preset":            -> container of subs
+        "@chan": "url"
+      "@chan":                  -> single sub at top level
+        preset: [...]
+        overrides: {url: ...}
+    """
+    if not isinstance(value, dict):
+        return False
+    return any(k in _PRESET_FIELDS for k in value.keys())
+
+
+def _migrate_subs(data: dict) -> None:
+    """Rewrite legacy `{url: ...}` sub blocks into `{overrides: {url: ...}}`.
+
+    Mutates `data` in place. ruamel preserves comments and key order
+    around mutated nodes. Safe to call repeatedly.
+
+    Handles two top-level shapes:
+      1. preset-name → subs container (subs are nested children)
+      2. standalone subscription (preset-level fields directly under
+         the top-level key)
+    Only Shape 1's children are subject to migration. Shape 2 entries
+    already use `overrides.url` correctly — touching them would corrupt
+    their structure.
+    """
+    for top_key, block in data.items():
+        if top_key.startswith("__") or not isinstance(block, dict):
+            continue
+        if _looks_like_sub_block(block):
+            # Shape 2 — top-level standalone sub. Already-correct shape
+            # (or, if it has a stray `url:` next to `overrides:`, that's
+            # the same legacy pattern; migrate the top-level block too).
+            _migrate_one(block)
+            continue
+        # Shape 1 — container of subscriptions.
+        for _name, sub in list(block.items()):
+            if isinstance(sub, dict):
+                _migrate_one(sub)
+
+
+def _migrate_one(sub: dict) -> None:
+    """Move a top-level `url` key inside this sub block into `overrides.url`."""
+    url = sub.get("url")
+    if not url:
+        return
+    ov = sub.get("overrides")
+    if not isinstance(ov, dict):
+        ov = {}
+        sub["overrides"] = ov
+    # Don't clobber a correctly-shaped overrides.url if both somehow
+    # coexist; prefer the new location.
+    ov.setdefault("url", url)
+    del sub["url"]
 
 
 def _load_profiles() -> list[str]:
@@ -162,22 +270,46 @@ def _normalize(url: str) -> str:
 def _iter_subs(data: dict):
     """Walk every subscription in `data`, yielding (preset, name, sub_dict).
 
-    ytdl-sub accepts three subscription value shapes:
-      "Channel": "https://..."                  # bare URL
-      "Channel": ["https://...", "https://..."]  # multi-URL
-      "Channel": {url: "...", overrides: ...}    # full preset block
-    Normalize all three to a dict so callers don't have to branch.
+    The file has two top-level shapes:
+      1. "Preset Name": { "@chan": <sub-value>, ... }
+         (preset-name container; nested values are subs)
+      2. "@chan": { preset: [...], overrides: {url: ...} }
+         (standalone subscription at top level — preset chain inline)
+
+    Sub-values themselves come in three shapes:
+      "Channel": "https://..."                       # bare URL
+      "Channel": ["https://...", "https://..."]      # multi-URL
+      "Channel": {overrides: {url: "..."}, ...}      # full preset block
+
+    Normalize everything to (preset_name, sub_name, dict_with_url).
+    The yielded `url` is a synthesized convenience field — not what
+    gets written back to subscriptions.yaml.
     """
-    for preset, block in data.items():
-        if preset.startswith("__") or not isinstance(block, dict):
+    for top_key, block in data.items():
+        if top_key.startswith("__") or not isinstance(block, dict):
             continue
+        if _looks_like_sub_block(block):
+            # Shape 2: the top-level key IS the sub. Render its preset
+            # chain (a list under `preset:`) as a " | "-joined string
+            # to match how Shape-1 entries are addressed.
+            preset_field = block.get("preset")
+            if isinstance(preset_field, list):
+                preset_repr = " | ".join(str(p) for p in preset_field)
+            elif isinstance(preset_field, str):
+                preset_repr = preset_field
+            else:
+                preset_repr = ""
+            yield preset_repr, top_key, {**block, "url": _sub_url(block)}
+            continue
+        # Shape 1: top-level key is a preset name; iterate its subs.
         for name, sub in block.items():
+            url = _sub_url(sub)
             if isinstance(sub, dict):
-                yield preset, name, sub
+                yield top_key, name, {**sub, "url": url}
             elif isinstance(sub, str):
-                yield preset, name, {"url": sub}
+                yield top_key, name, {"url": sub}
             elif isinstance(sub, list) and sub:
-                yield preset, name, {"url": sub[0], "additional_urls": sub[1:]}
+                yield top_key, name, {"url": sub[0], "additional_urls": sub[1:]}
 
 
 def _find_by_url(data: dict, url: str):
@@ -383,12 +515,24 @@ def add_channel():
     if preset not in data or not isinstance(data[preset], dict):
         data[preset] = {}
 
-    block = {"url": url}
+    # ytdl-sub accepts `url` only inside `overrides:` (it's an override
+    # variable that the preset chain references as `{url}`). A
+    # top-level `url:` next to `overrides:` fails preset validation
+    # with "contains the field 'url' which is not allowed".
+    #
+    # Two valid shapes, picked based on whether we have other overrides:
+    #   - No overrides:  scalar string  ("Name": "https://...")
+    #   - Any overrides: dict           ("Name": {overrides: {url: ..., ...}})
     if overrides:
-        block["overrides"] = overrides
+        block = {"overrides": {"url": url, **overrides}}
+    else:
+        block = url
     data[preset][name] = block
     _save(data)
-    return jsonify({"added": {"preset": preset, "name": name, **block}}), 201
+    response = {"preset": preset, "name": name, "url": url}
+    if overrides:
+        response["overrides"] = overrides
+    return jsonify({"added": response}), 201
 
 
 @app.delete("/channels/<name>")
@@ -396,7 +540,11 @@ def add_channel():
 def delete_channel(name: str):
     data = _load()
     for preset, block in data.items():
-        if isinstance(block, dict) and name in block and isinstance(block[name], dict):
+        # Match any sub shape (scalar URL, list, or dict block) — the
+        # writer now produces scalar form when there are no overrides,
+        # so the old `isinstance(..., dict)` filter would silently fail
+        # to delete those.
+        if isinstance(block, dict) and name in block:
             del block[name]
             _save(data)
             return jsonify({"deleted": {"preset": preset, "name": name}})
