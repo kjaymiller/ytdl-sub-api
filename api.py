@@ -15,6 +15,7 @@ Endpoints (all require `Authorization: Bearer <API_TOKEN>` except
        body: {url, name?, profile?, preset?, keep_days?, max_files?}
   DELETE /channels/<name>                 -> remove
   POST /run                               -> docker exec ytdl-sub to pull now
+  POST /videos                            -> one-off `ytdl-sub dl` for {url, preset?}
   GET  /runs?limit=N                      -> recent ofelia run history (default 20)
   GET  /downloads                         -> per-folder snapshot under /downloads
 
@@ -571,6 +572,59 @@ def run_now():
             "output_tail": (output.decode("utf-8", errors="replace")[-4000:] if output else ""),
         }
     )
+
+
+def _global_overrides() -> dict:
+    """Top-level `__preset__.overrides` from subscriptions.yaml.
+
+    `ytdl-sub sub <file>` applies these to every sub in the file; `dl`
+    doesn't read the subs file, so we have to pass them through as CLI
+    overrides for one-off downloads to land in the same layout
+    (e.g. `tv_show_directory: /downloads`).
+    """
+    try:
+        data = _load()
+    except Exception:  # noqa: BLE001
+        return {}
+    block = data.get("__preset__")
+    if not isinstance(block, dict):
+        return {}
+    ov = block.get("overrides")
+    return _plain(ov) if isinstance(ov, dict) else {}
+
+
+@app.post("/videos")
+@_auth_required
+def download_video():
+    """One-off download: run `ytdl-sub dl` for a single URL with the
+    given preset. Synchronous — returns when ytdl-sub exits.
+    """
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    preset = (payload.get("preset") or DEFAULT_PRESET).strip()
+    if not url:
+        return jsonify({"error": "url required"}), 400
+
+    cmd = ["ytdl-sub", "--config", CONFIG_PATH, "dl", "--preset", preset]
+    for key, value in _global_overrides().items():
+        cmd.append(f"--overrides.{key}")
+        cmd.append(str(value))
+    cmd += ["--overrides.url", url]
+
+    try:
+        client = docker.from_env()
+        container = client.containers.get(CONTAINER)
+        exit_code, output = container.exec_run(cmd, demux=False)
+    except docker.errors.NotFound:
+        return jsonify({"error": f"container {CONTAINER} not running"}), 503
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "exit_code": exit_code,
+            "output_tail": (output.decode("utf-8", errors="replace")[-4000:] if output else ""),
+        }
+    ), (200 if exit_code == 0 else 502)
 
 
 @app.get("/runs")
