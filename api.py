@@ -16,6 +16,10 @@ Endpoints (all require `Authorization: Bearer <API_TOKEN>` except
   DELETE /channels/<name>                 -> remove
   POST /run                               -> docker exec ytdl-sub to pull now
   POST /videos                            -> one-off `ytdl-sub dl` for {url, preset?}
+  POST /presets                           -> create profile {name, parents?, overrides?}
+  PATCH /presets/<name>                   -> update parents and/or overrides
+  DELETE /presets/<name>                  -> remove (refuses 409 if a sub still
+                                             references it)
   GET  /runs?limit=N                      -> recent ofelia run history (default 20)
   GET  /downloads                         -> per-folder snapshot under /downloads
 
@@ -212,6 +216,54 @@ def _plain(v):
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     return str(v)
+
+
+def _load_config() -> dict:
+    """Load CONFIG_PATH via the shared ruamel parser. Returns {} on
+    missing/empty file so callers can mutate and save without a
+    pre-check."""
+    try:
+        with open(CONFIG_PATH) as f:
+            return yaml.load(f) or {}
+    except OSError:
+        return {}
+
+
+def _save_config(data: dict) -> None:
+    """Write CONFIG_PATH via temp + atomic rename so a partial write
+    never lands on disk and the cron can't read a half-flushed file."""
+    buf = io.StringIO()
+    yaml.dump(data, buf)
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(buf.getvalue())
+    os.replace(tmp, CONFIG_PATH)
+
+
+def _preset_users(profile_name: str) -> list[dict]:
+    """Subscriptions whose preset chain includes `profile_name`.
+
+    Shape 1 entries store the chain as a " | "-joined key (e.g.
+    "Jellyfin TV Show by Date | daily"); Shape 2 entries have the
+    chain as a list, which `_iter_subs` joins with " | " for the
+    yielded `preset` value. Splitting on "|" + stripping covers
+    both shapes uniformly. Returns [] on parse error so a corrupt
+    subs file doesn't block a delete with a 500.
+    """
+    try:
+        data = _load()
+    except Exception:  # noqa: BLE001
+        return []
+    users: list[dict] = []
+    for preset, name, sub in _iter_subs(data):
+        chain = [p.strip() for p in (preset or "").split("|") if p.strip()]
+        if profile_name in chain:
+            users.append({
+                "preset": preset,
+                "name": name,
+                "url": sub.get("url", ""),
+            })
+    return users
 
 
 def _load_profile_details() -> dict[str, dict]:
@@ -452,6 +504,145 @@ def list_presets():
             "profile_details": _load_profile_details(),
         }
     )
+
+
+def _validate_preset_name(name: str) -> str | None:
+    """Return None if `name` is OK as a presets-block key; else error msg."""
+    if not name:
+        return "name required"
+    if name == "__preset__":
+        return "__preset__ is reserved"
+    if "|" in name or ":" in name:
+        return "name may not contain '|' or ':'"
+    return None
+
+
+def _validate_parents(parents) -> str | None:
+    if not isinstance(parents, list):
+        return "parents must be a list of strings"
+    if not all(isinstance(p, str) and p.strip() for p in parents):
+        return "parents must be non-empty strings"
+    return None
+
+
+def _validate_overrides(overrides) -> str | None:
+    if not isinstance(overrides, dict):
+        return "overrides must be an object"
+    if not all(isinstance(k, str) for k in overrides.keys()):
+        return "overrides keys must be strings"
+    return None
+
+
+@app.post("/presets")
+@_auth_required
+def create_preset():
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    err = _validate_preset_name(name)
+    if err:
+        return jsonify({"error": err}), 400
+    parents = payload.get("parents") or []
+    err = _validate_parents(parents)
+    if err:
+        return jsonify({"error": err}), 400
+    overrides = payload.get("overrides") or {}
+    err = _validate_overrides(overrides)
+    if err:
+        return jsonify({"error": err}), 400
+
+    cfg = _load_config()
+    presets = cfg.get("presets")
+    if presets is None:
+        cfg["presets"] = {}
+        presets = cfg["presets"]
+    if not isinstance(presets, dict):
+        return jsonify({"error": "config.yaml has malformed 'presets:' block"}), 500
+    if name in presets:
+        return jsonify({"error": "preset already exists", "name": name}), 409
+
+    body: dict = {}
+    if parents:
+        body["preset"] = list(parents)
+    if overrides:
+        body["overrides"] = dict(overrides)
+    presets[name] = body
+    _save_config(cfg)
+    return jsonify({
+        "created": {
+            "name": name,
+            "parents": list(parents),
+            "overrides": dict(overrides),
+        }
+    }), 201
+
+
+@app.patch("/presets/<name>")
+@_auth_required
+def update_preset(name: str):
+    err = _validate_preset_name(name)
+    if err:
+        return jsonify({"error": err}), 400
+    payload = request.get_json(silent=True) or {}
+    cfg = _load_config()
+    presets = cfg.get("presets")
+    if not isinstance(presets, dict) or name not in presets:
+        return jsonify({"error": "preset not found"}), 404
+    block = presets[name]
+    if not isinstance(block, dict):
+        return jsonify({"error": "preset has malformed shape"}), 500
+
+    if "parents" in payload:
+        parents = payload["parents"] or []
+        err = _validate_parents(parents)
+        if err:
+            return jsonify({"error": err}), 400
+        if parents:
+            block["preset"] = list(parents)
+        elif "preset" in block:
+            del block["preset"]
+    if "overrides" in payload:
+        overrides = payload["overrides"] or {}
+        err = _validate_overrides(overrides)
+        if err:
+            return jsonify({"error": err}), 400
+        if overrides:
+            block["overrides"] = dict(overrides)
+        elif "overrides" in block:
+            del block["overrides"]
+
+    _save_config(cfg)
+    return jsonify({
+        "updated": {
+            "name": name,
+            "parents": _plain(block.get("preset")) or [],
+            "overrides": _plain(block.get("overrides")) or {},
+        }
+    })
+
+
+@app.delete("/presets/<name>")
+@_auth_required
+def delete_preset(name: str):
+    err = _validate_preset_name(name)
+    if err:
+        return jsonify({"error": err}), 400
+    cfg = _load_config()
+    presets = cfg.get("presets")
+    if not isinstance(presets, dict) or name not in presets:
+        return jsonify({"error": "preset not found"}), 404
+
+    users = _preset_users(name)
+    if users:
+        return jsonify({
+            "error": "preset in use",
+            "name": name,
+            "user_count": len(users),
+            "users": users,
+        }), 409
+
+    del presets[name]
+    _save_config(cfg)
+    return jsonify({"deleted": name})
 
 
 @app.get("/channels")
