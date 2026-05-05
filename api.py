@@ -731,15 +731,30 @@ def add_channel():
 @_auth_required
 def delete_channel(name: str):
     data = _load()
+    # Shape 1: the channel is a child of a preset-name container key.
+    # Skip top-level keys whose value is itself a sub block (Shape 2)
+    # — those have to be matched against `name` directly, not as a
+    # parent dict.
     for preset, block in data.items():
-        # Match any sub shape (scalar URL, list, or dict block) — the
-        # writer now produces scalar form when there are no overrides,
-        # so the old `isinstance(..., dict)` filter would silently fail
-        # to delete those.
-        if isinstance(block, dict) and name in block:
+        if (
+            isinstance(block, dict)
+            and not _looks_like_sub_block(block)
+            and name in block
+        ):
             del block[name]
             _save(data)
             return jsonify({"deleted": {"preset": preset, "name": name}})
+    # Shape 2: the channel IS a top-level key whose value is a sub
+    # block (preset chain inline). The previous loop matched
+    # `name in block`, which is membership against the sub-block's
+    # own keys (`preset`, `overrides`, …) and never matched the
+    # channel name — so Shape-2 entries leaked past the delete and
+    # POST /channels would later refuse with 409 "already subscribed".
+    block = data.get(name)
+    if isinstance(block, dict) and _looks_like_sub_block(block):
+        del data[name]
+        _save(data)
+        return jsonify({"deleted": {"preset": "(standalone)", "name": name}})
     return jsonify({"error": "not found"}), 404
 
 
